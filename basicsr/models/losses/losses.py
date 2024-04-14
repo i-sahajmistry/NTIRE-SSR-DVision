@@ -30,6 +30,98 @@ def mse_loss(pred, target):
 # def charbonnier_loss(pred, target, eps=1e-12):
 #     return torch.sqrt((pred - target)**2 + eps)
 
+#### TEXTURE LOSS  
+'''
+Loss Functions used in NTIRE 2023 Challenge 
+1. VGG 
+2. TextureLossVGG19  
+'''
+
+class VGG(nn.Module):
+    'Pretrained VGG-19 model features.'
+    def __init__(self, layers=(0), replace_pooling = False):
+        super(VGG, self).__init__()
+        self.layers = layers
+        self.instance_normalization = nn.InstanceNorm2d(128)
+        self.relu = nn.ReLU()
+        self.model = vgg19(pretrained=True).features
+        # Changing Max Pooling to Average Pooling
+        if replace_pooling:
+            self.model._modules['4'] = nn.AvgPool2d((2,2), (2,2), (1,1))
+            self.model._modules['9'] = nn.AvgPool2d((2,2), (2,2), (1,1))
+            self.model._modules['18'] =nn.AvgPool2d((2,2), (2,2), (1,1))
+            self.model._modules['27'] =nn.AvgPool2d((2,2), (2,2), (1,1))
+            self.model._modules['36'] = nn.AvgPool2d((2,2), (2,2), (1,1))
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        features = []
+        for name, layer in enumerate(self.model):
+            x = layer(x)
+            if name in self.layers:
+                features.append(x)
+                if len(features) == len(self.layers):
+                    break
+        return features
+
+
+class TextureLossVGG19(torch.nn.Module):
+    def __init__(self, loss_weight = 1.): 
+        super(TextureLossVGG19, self).__init__()
+        self.loss_weight = loss_weight 
+        
+        texture_layers = ['8','17','26','35']
+        vgg_layers = [int(i) for i in texture_layers]
+        self.vgg_texture = VGG(layers=vgg_layers, replace_pooling = False)
+
+        if torch.cuda.is_available():
+            self.vgg_texture = self.vgg_texture.cuda()
+    
+    
+    def forward(self, inp, gt): 
+        with torch.no_grad():
+            sr_l, sr_r = torch.split(inp,(3,3),dim=1)  
+            hr_l, hr_r = torch.split(gt,(3,3),dim=1) 
+            
+            # we process both the left view and right view one at a time
+            # Processing the Left View: 
+            vgg_sr = self.vgg_texture.forward(sr_l) 
+            vgg_gt = self.vgg_texture.forward(hr_l) 
+            text_loss_l = []
+            gram_sr = [self.gram_matrix(y) for y in vgg_sr]
+            gram_gt = [self.gram_matrix(y) for y in vgg_gt]
+            for m in range(0,len(vgg_sr)):
+                text_loss_l += [self.criterion(gram_sr[m],gram_gt[m])]
+            text_loss_l = sum(text_loss_l)
+        
+            # Processing the right view: 
+            vgg_sr = self.vgg_texture.forward(sr_r) 
+            vgg_gt = self.vgg_texture.forward(hr_r) 
+            text_loss_r = [] 
+            gram_sr = [self.gram_matrix(y) for y in vgg_sr]
+            gram_gt = [self.gram_matrix(y) for y in vgg_gt]
+            for m in range(0,len(vgg_sr)):
+                text_loss_r += [self.criterion(gram_sr[m],gram_gt[m])]
+            text_loss_r = sum(text_loss_r)
+            
+            texture_loss = text_loss_l + text_loss_r 
+            texture_loss = texture_loss * self.loss_weight 
+        
+        return texture_loss
+    
+        
+    
+    def gram_matrix(self,y):
+        (b, ch, h, w) = y.size()
+        features = y.view(b, ch, w * h)
+        features_t = features.transpose(1, 2)
+        gram = features.bmm(features_t) / (ch * h * w)
+        return gram
+
+    def criterion(self,a, b):
+        return torch.mean(torch.abs((a-b)**2).view(-1))
+
 class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, loss_weight=1., resize=True):
         super(VGGPerceptualLoss, self).__init__()

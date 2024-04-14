@@ -62,8 +62,17 @@ class ImageRestorationModel(BaseModel):
         else:
             self.cri_perceptual = None
 
-        if self.cri_pix is None and self.cri_perceptual is None:
-            raise ValueError('Both pixel and perceptual losses are None.')
+        if train_opt.get('texture_opt'):
+            text_loss_type = train_opt['texture_opt'].pop('type') # TextureLossVGG19 
+            cri_text_loss_cls = getattr(loss_module, text_loss_type) 
+            self.cri_text_loss = cri_text_loss_cls(
+                **train_opt['texture_opt']
+            ).to(self.device)
+        else: 
+            self.cri_text_loss = None 
+
+        if self.cri_pix is None and self.cri_perceptual is None and self.cri_text_loss is None:
+            raise ValueError('All losses are None.')
 
         # set up optimizers and schedulers
         self.setup_optimizers()
@@ -220,6 +229,13 @@ class ImageRestorationModel(BaseModel):
             if l_style is not None:
                 l_total += l_style
                 loss_dict['l_style'] = l_style
+
+        # VGG 19 Based Texture Loss
+        if self.cri_text_loss and current_iter>=50000: 
+            loss_texture = self.cri_text_loss(self.output, self.gt)  
+            if loss_texture is not None: 
+                l_total += loss_texture 
+                loss_dict['l_texture'] = loss_texture
 
 
         l_total = l_total + 0. * sum(p.sum() for p in self.net_g.parameters())

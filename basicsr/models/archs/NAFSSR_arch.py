@@ -80,9 +80,9 @@ class NAFBlockSR(nn.Module):
     '''
     NAFBlock for Super-Resolution
     '''
-    def __init__(self, c, fusion=False, drop_out_rate=0.):
+    def __init__(self, c, fusion=False, drop_out_rate=0., odconv=False):
         super().__init__()
-        self.blk = NAFBlock(c, drop_out_rate=drop_out_rate)
+        self.blk = NAFBlock(c, drop_out_rate=drop_out_rate, odconv=odconv)
         self.fusion = SCAM(c) if fusion else None
         self.features = None
         self.return_feats = None
@@ -102,7 +102,7 @@ class NAFNetSR(nn.Module):
     '''
     NAFNet for Super-Resolution
     '''
-    def __init__(self, up_scale=4, width=48, num_blks=16, img_channel=3, drop_path_rate=0., drop_out_rate=0., fusion_from=-1, fusion_to=-1, dual=False):
+    def __init__(self, up_scale=4, width=48, num_blks=16, img_channel=3, drop_path_rate=0., drop_out_rate=0., fusion_from=-1, fusion_to=-1, dual=False, odconv=False):
         super().__init__()
         self.dual = dual    # dual input for stereo SR (left view, right view)
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
@@ -113,7 +113,8 @@ class NAFNetSR(nn.Module):
                 NAFBlockSR(
                     width, 
                     fusion=(fusion_from <= i and i <= fusion_to), 
-                    drop_out_rate=drop_out_rate
+                    drop_out_rate=drop_out_rate,
+                    odconv=odconv
                 )) for i in range(num_blks)]
         )
 
