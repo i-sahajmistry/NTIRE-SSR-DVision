@@ -219,7 +219,8 @@ class BaseModel():
             for key, param in state_dict.items():
                 if key.startswith('module.'):  # remove unnecessary 'module.'
                     key = key[7:]
-                state_dict[key] = param.cpu()
+                state_dict[key] = param.cpu().to(torch.float16)
+                # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ converted float32 to float16
             save_dict[param_key_] = state_dict
 
         torch.save(save_dict, save_path)
@@ -280,9 +281,11 @@ class BaseModel():
         print(' load net keys', load_net.keys)
         # remove unnecessary 'module.'
         for k, v in deepcopy(load_net).items():
+            # v = v.to(torch.int8)
             if k.startswith('module.'):
                 load_net[k[7:]] = v
                 load_net.pop(k)
+            # print(v.dtype)
         self._print_different_keys_loading(net, load_net, strict)
         net.load_state_dict(load_net, strict=strict)
 

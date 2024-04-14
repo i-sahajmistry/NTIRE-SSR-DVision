@@ -4,13 +4,14 @@
 # Modified from BasicSR (https://github.com/xinntao/BasicSR)
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
+import torch
 from torch.utils import data as data
 from torchvision.transforms.functional import normalize, resize
 
 from basicsr.data.data_util import (paired_paths_from_folder,
                                     paired_paths_from_lmdb,
                                     paired_paths_from_meta_info_file)
-from basicsr.data.transforms import augment, paired_random_crop, paired_random_crop_hw
+from basicsr.data.transforms import augment, paired_random_crop, paired_random_crop_kd
 from basicsr.utils import FileClient, imfrombytes, img2tensor, padding
 import os
 import numpy as np
@@ -182,12 +183,12 @@ class PairedImageSRLRDataset(data.Dataset):
         return self.nums // 2
 
 
-class PairedStereoImageDataset(data.Dataset):
+class PairedStereoImageDatasetKD(data.Dataset):
     '''
     Paired dataset for stereo SR (Flickr1024, KITTI, Middlebury)
     '''
     def __init__(self, opt):
-        super(PairedStereoImageDataset, self).__init__()
+        super(PairedStereoImageDatasetKD, self).__init__()
         self.opt = opt
         # file client (io backend)
         self.file_client = None
@@ -216,8 +217,9 @@ class PairedStereoImageDataset(data.Dataset):
             self.file_client = FileClient(
                 self.io_backend_opt.pop('type'), **self.io_backend_opt)
 
-        gt_path_L, gt_path_R, lq_path_L, lq_path_R = [os.path.join(self.data_path, i) for i in self.samples[index].split()]
+        gt_path_L, gt_path_R, lq_path_L, lq_path_R, gt_t_path_L, gt_t_path_R, features_path = [os.path.join(self.data_path, i) for i in self.samples[index].split()]
 
+        # features = np.load(features_path)
         img_bytes = self.file_client.get(gt_path_L, 'gt')
         try:
             img_gt_L = imfrombytes(img_bytes, float32=True)
@@ -243,7 +245,20 @@ class PairedStereoImageDataset(data.Dataset):
             img_lq_R = imfrombytes(img_bytes, float32=True)
         except:
             raise Exception("lq path {} not working".format(lq_path_R))
+        
+        img_bytes = self.file_client.get(gt_t_path_L, 'gt')
+        try:
+            img_gt_t_L = imfrombytes(img_bytes, float32=True)
+        except:
+            raise Exception("gt path {} not working".format(gt_t_path_L))
 
+        img_bytes = self.file_client.get(gt_t_path_R, 'gt')
+        try:
+            img_gt_t_R = imfrombytes(img_bytes, float32=True)
+        except:
+            raise Exception("gt path {} not working".format(gt_t_path_R))
+
+        img_gt_t = np.concatenate([img_gt_t_L, img_gt_t_R], axis=-1)
         img_gt = np.concatenate([img_gt_L, img_gt_R], axis=-1)
         img_lq = np.concatenate([img_lq_L, img_lq_R], axis=-1)
 
@@ -267,33 +282,50 @@ class PairedStereoImageDataset(data.Dataset):
                     [2, 1, 0, 5, 4, 3],
                 ][int(np.random.rand() * 6)]
 
+                img_gt_t = img_gt_t[:, :, idx]
                 img_gt = img_gt[:, :, idx]
                 img_lq = img_lq[:, :, idx]
 
             # random crop
-            img_gt, img_lq = img_gt.copy(), img_lq.copy()
-            img_gt, img_lq = paired_random_crop_hw(img_gt, img_lq, gt_size_h, gt_size_w, scale,
+            img_gt_t, img_gt, img_lq = img_gt_t.copy(), img_gt.copy(), img_lq.copy()
+            img_gt_t, img_gt, img_lq = paired_random_crop_kd(img_gt_t, img_gt, img_lq, gt_size_h, gt_size_w, scale,
                                                 'gt_path_L_and_R')
             # flip, rotation
-            imgs, status = augment([img_gt, img_lq], self.opt['use_hflip'],
+            imgs, status = augment([img_gt_t, img_gt, img_lq], self.opt['use_hflip'],
                                     self.opt['use_rot'], vflip=self.opt['use_vflip'], return_status=True)
 
 
-            img_gt, img_lq = imgs
+            img_gt_t, img_gt, img_lq = imgs
 
-        img_gt, img_lq = img2tensor([img_gt, img_lq],
+        img_gt_t, img_gt, img_lq = img2tensor([img_gt_t, img_gt, img_lq],
                                     bgr2rgb=True,
                                     float32=True)
+        
+        # torch_features = {}
+        # for k, v in features.items():
+        #     if 'layer' in k:
+        #         v = v.reshape(2, 128, 128, 180)
+        #     if 'last' not in k:
+        #         torch_features[k] = torch.nn.functional.interpolate(torch.from_numpy(v).unsqueeze(0), (48, 30, 90)).squeeze(0)
+        #     else:
+        #         torch_features[k] = torch.nn.functional.interpolate(torch.from_numpy(v).unsqueeze(0), (3, 120, 360)).squeeze(0)
+        #     torch_features[k] = torch.cat([i for i in torch_features[k]], dim = 0)
+
         # normalize
         if self.mean is not None or self.std is not None:
             normalize(img_lq, self.mean, self.std, inplace=True)
             normalize(img_gt, self.mean, self.std, inplace=True)
+            normalize(img_gt_t, self.mean, self.std, inplace=True)
+
 
         return {
             'lq': img_lq,
             'gt': img_gt,
+            'gt_t': img_gt_t,
             'lq_path': lq_path_L,
             'gt_path': gt_path_L,
+            'gt_t_path': gt_t_path_L,
+            # 'features': torch_features
         }
 
     def __len__(self):

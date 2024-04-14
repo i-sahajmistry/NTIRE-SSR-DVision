@@ -5,8 +5,8 @@
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
 # general settings
-name: NAFNetSR-T_x4_Orignal_48_14_Full
-model_type: ImageRestorationModel
+name: pre_KnowledgeDistillation-TB_x4
+model_type: KnowledgeDistillationModel
 scale: 4
 num_gpu: 1
 manual_seed: 10
@@ -52,17 +52,28 @@ network_g:
   train_size: [1, 6, 30, 90]
   drop_out_rate: 0.
 
+network_t:
+  type: NAFSSR
+  up_scale: 4
+  width: 96
+  num_blks: 64
+  drop_path_rate: 0.2
+  train_size: [1, 6, 30, 90]
+  drop_out_rate: 0.
+
 # path
 path:
   pretrain_network_g: ~
+  pretrain_network_t: experiments/pretrained_models/NAFSSR/NAFSSR-B_4x.pth
   strict_load_g: true
+  strict_load_t: true
   resume_state: ~
 
 # training settings
 train:
   optim_g:
     type: AdamW
-    lr: !!float 3e-3
+    lr: !!float 3e-5
     weight_decay: !!float 0
     betas: [0.9, 0.9]
 
@@ -81,9 +92,14 @@ train:
     loss_weight: 1.
     reduction: mean
 
+  pixel_kd_opt:
+    type: MSELoss
+    loss_weight: 1.
+    reduction: mean
+
 # validation settings
 val:
-  val_freq: !!float 2e4
+  val_freq: !!float 1e4
   save_img: false
   trans_num: 1
 
@@ -103,7 +119,7 @@ logger:
   save_checkpoint_freq: !!float 1e4
   use_tb_logger: true
   wandb:
-    project: NAFSSR-T16
+    project: NAFSSR
     resume_id: ~
 
 # dist training settings

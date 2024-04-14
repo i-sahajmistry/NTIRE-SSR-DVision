@@ -84,11 +84,18 @@ class NAFBlockSR(nn.Module):
         super().__init__()
         self.blk = NAFBlock(c, drop_out_rate=drop_out_rate)
         self.fusion = SCAM(c) if fusion else None
+        self.features = None
+        self.return_feats = None
+        self.kr = False
 
     def forward(self, *feats):
         feats = tuple([self.blk(x) for x in feats])
         if self.fusion:
             feats = self.fusion(*feats)
+        if self.features is not None:
+            feats = tuple([(self.features[:, i, ...] + feat) for i, feat in enumerate(feats)])
+        if self.kr:
+            self.return_feats = torch.cat(feats, dim=1)
         return feats
 
 class NAFNetSR(nn.Module):
@@ -116,17 +123,36 @@ class NAFNetSR(nn.Module):
         )
         self.up_scale = up_scale
 
-    def forward(self, inp):
+    def forward(self, inp, features=None, kr=False):
         inp_hr = F.interpolate(inp, scale_factor=self.up_scale, mode='bilinear')
+        return_feats = []
+        
         if self.dual:
             inp = inp.chunk(2, dim=1)
         else:
             inp = (inp, )
         feats = [self.intro(x) for x in inp]
+        
+        if kr: 
+            return_feats.append(torch.cat(feats, dim=1))
+        
+        if features is not None or kr:
+            for i in [7, 15]:
+                self.body[i].module.features = features
+                self.body[i].module.kr = kr
+            
         feats = self.body(*feats)
+        
+        if kr:
+            for i in [7, 15]:
+                return_feats.append(self.body[i].module.return_feats)
+            
         out = torch.cat([self.up(x) for x in feats], dim=1)
-        out = out + inp_hr
-        return out
+        out = out + inp_hr   
+        
+        if kr:
+            return_feats.append(out)             
+        return out, return_feats
 
 class NAFSSR(Local_Base, NAFNetSR):
     def __init__(self, *args, train_size=(1, 6, 30, 90), fast_imp=False, fusion_from=-1, fusion_to=1000, **kwargs):

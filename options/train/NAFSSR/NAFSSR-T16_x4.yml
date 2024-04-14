@@ -5,7 +5,7 @@
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
 # general settings
-name: NAFNetSR-T_x4_Orignal_48_14_Full
+name: NAFNetSR-T16_B4_Pre_32_16
 model_type: ImageRestorationModel
 scale: 4
 num_gpu: 1
@@ -46,16 +46,16 @@ datasets:
 network_g:
   type: NAFSSR
   up_scale: 4
-  width: 48
-  num_blks: 14
+  width: 32
+  num_blks: 16
   drop_path_rate: 0.
   train_size: [1, 6, 30, 90]
   drop_out_rate: 0.
 
 # path
 path:
-  pretrain_network_g: ~
-  strict_load_g: true
+  pretrain_network_g: experiments/pretrained_models/NAFSSR/NAFSSR-T_x4.pth
+  strict_load_g: false
   resume_state: ~
 
 # training settings
@@ -83,7 +83,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 2e4
+  val_freq: !!float 6e4
   save_img: false
   trans_num: 1
 
@@ -100,7 +100,7 @@ val:
 # logging settings
 logger:
   print_freq: 200
-  save_checkpoint_freq: !!float 1e4
+  save_checkpoint_freq: !!float 12e4
   use_tb_logger: true
   wandb:
     project: NAFSSR-T16

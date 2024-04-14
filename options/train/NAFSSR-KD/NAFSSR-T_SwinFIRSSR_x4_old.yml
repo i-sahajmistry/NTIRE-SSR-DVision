@@ -5,8 +5,8 @@
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
 # general settings
-name: NAFNetSR-T_x4_Orignal_48_14_Full
-model_type: ImageRestorationModel
+name: KnowledgeDistillation-T_SwinFIR_x4
+model_type: KnowledgeDistillationModel
 scale: 4
 num_gpu: 1
 manual_seed: 10
@@ -14,7 +14,7 @@ manual_seed: 10
 datasets:
   train:
     name: Flickr1024-sr-train
-    type: PairedStereoImageDataset
+    type: PairedStereoImageDatasetKD
     data_path: ../datasets/Track1_sub
     data_txt: train_test_files/track1_train.txt
     io_backend:
@@ -26,6 +26,10 @@ datasets:
     use_vflip: true
     use_rot: false
     flip_RGB: true
+
+    gt_size: 256
+    use_mixup: true
+    use_channelshuffle: true
 
     # data loader
     use_shuffle: true
@@ -47,14 +51,16 @@ network_g:
   type: NAFSSR
   up_scale: 4
   width: 48
-  num_blks: 14
+  num_blks: 16
   drop_path_rate: 0.
   train_size: [1, 6, 30, 90]
   drop_out_rate: 0.
 
+network_t: options/test/SwinFIRSSR/SwinFIRSSR_SSRx4.yml
+
 # path
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: experiments/pretrained_models/NAFSSR/NAFSSR-T_4x.pth
   strict_load_g: true
   resume_state: ~
 
@@ -81,9 +87,14 @@ train:
     loss_weight: 1.
     reduction: mean
 
+  pixel_kd_opt:
+    type: MSELoss
+    loss_weight: 1.
+    reduction: mean
+
 # validation settings
 val:
-  val_freq: !!float 2e4
+  val_freq: !!float 1e4
   save_img: false
   trans_num: 1
 
@@ -103,7 +114,7 @@ logger:
   save_checkpoint_freq: !!float 1e4
   use_tb_logger: true
   wandb:
-    project: NAFSSR-T16
+    project: NAFSSR
     resume_id: ~
 
 # dist training settings

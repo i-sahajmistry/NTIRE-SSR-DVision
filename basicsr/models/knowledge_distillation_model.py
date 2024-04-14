@@ -11,6 +11,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from os import path as osp
 from tqdm import tqdm
+import numpy as np
 
 from basicsr.models.archs import define_network
 from basicsr.models.base_model import BaseModel
@@ -20,11 +21,11 @@ from basicsr.utils.dist_util import get_dist_info
 loss_module = importlib.import_module('basicsr.models.losses')
 metric_module = importlib.import_module('basicsr.metrics')
 
-class ImageRestorationModel(BaseModel):
+class KnowledgeDistillationModel(BaseModel):
     """Base Deblur model for single image deblur."""
 
     def __init__(self, opt):
-        super(ImageRestorationModel, self).__init__(opt)
+        super(KnowledgeDistillationModel, self).__init__(opt)
 
         # define network
         self.net_g = define_network(deepcopy(opt['network_g']))
@@ -54,6 +55,19 @@ class ImageRestorationModel(BaseModel):
         else:
             self.cri_pix = None
 
+        if train_opt.get('pixel_kd_opt'):
+            pixel_type = train_opt['pixel_kd_opt'].pop('type')
+            cri_pix_cls = getattr(loss_module, pixel_type)
+            self.cri_pix_kd = cri_pix_cls(**train_opt['pixel_kd_opt']).to(
+                self.device)
+        else:
+            self.cri_pix_kd = None
+            
+        if train_opt.get('pixel_kr_opt'):
+            self.cri_pix_kr = True
+        else:
+            self.cri_pix_kr = False
+
         if train_opt.get('perceptual_opt'):
             percep_type = train_opt['perceptual_opt'].pop('type')
             cri_perceptual_cls = getattr(loss_module, percep_type)
@@ -61,6 +75,14 @@ class ImageRestorationModel(BaseModel):
                 **train_opt['perceptual_opt']).to(self.device)
         else:
             self.cri_perceptual = None
+
+        if train_opt.get('perceptual_kd_opt'):
+            percep_type = train_opt['perceptual_kd_opt'].pop('type')
+            cri_perceptual_cls = getattr(loss_module, percep_type)
+            self.cri_perceptual_kd = cri_perceptual_cls(
+                **train_opt['perceptual_kd_opt']).to(self.device)
+        else:
+            self.cri_perceptual_kd = None
 
         if self.cri_pix is None and self.cri_perceptual is None:
             raise ValueError('Both pixel and perceptual losses are None.')
@@ -103,9 +125,15 @@ class ImageRestorationModel(BaseModel):
 
     def feed_data(self, data, is_val=False):
         self.lq = data['lq'].to(self.device)
+        if 'features' in data:
+            self.features = [v.to(self.device) for _, v in data['features'].items()]
+        else:
+            self.features = None
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
-
+        if 'gt_t' in data:
+            self.gt_t = data['gt_t'].to(self.device)
+        
     def grids(self):
         b, c, h, w = self.gt.size()
         self.original_size = (b, c, h, w)
@@ -191,8 +219,14 @@ class ImageRestorationModel(BaseModel):
 
         if self.opt['train'].get('mixup', False):
             self.mixup_aug()
+        
+        if self.cri_pix_kr:
+            preds, feats = self.net_g(self.lq, kr=True)
+        elif self.features is not None:
+            preds, feats = self.net_g(self.lq, features=self.features)
+        else:
+            preds, feats = self.net_g(self.lq)
 
-        preds = self.net_g(self.lq)
         if not isinstance(preds, list):
             preds = [preds]
 
@@ -206,23 +240,47 @@ class ImageRestorationModel(BaseModel):
             for pred in preds:
                 l_pix += self.cri_pix(pred, self.gt)
 
-            # print('l pix ... ', l_pix)
             l_total += l_pix
             loss_dict['l_pix'] = l_pix
 
+        if self.cri_pix_kd:
+            l_pix_kd = 0
+            for pred in preds:
+                l_pix_kd += self.cri_pix_kd(self.cri_pix(pred, self.gt), self.cri_pix(pred, self.gt_t))
+
+            l_total += l_pix_kd
+            loss_dict['l_pix_kd'] = l_pix_kd
+            
+        if self.cri_pix_kr:
+            l_pix_kr = 0
+            for feat_swin, feat_naf in zip(self.features, feats):
+                
+                l_pix_kr += self.cri_pix(feat_swin, feat_naf)
+
+            l_total += l_pix_kr
+            loss_dict['l_pix_kr'] = l_pix_kr
+
         # perceptual loss
         if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.output, self.gt)
-        #
+            per_1 = self.cri_perceptual(self.output[:, :3, ...], self.gt[:, :3, ...])
+            per_2 = self.cri_perceptual(self.output[:, 3:, ...], self.gt[:, 3:, ...])
+            l_percep = per_1
+            l_percep += per_2
+        
             if l_percep is not None:
                 l_total += l_percep
                 loss_dict['l_percep'] = l_percep
-            if l_style is not None:
-                l_total += l_style
-                loss_dict['l_style'] = l_style
 
+        if self.cri_perceptual_kd:
+            l_percep = self.cri_pix(per_1, self.cri_perceptual(self.output[:, :3, ...], self.gt_t[:, :3, ...]))
+            l_percep += self.cri_pix(per_2, self.cri_perceptual(self.output[:, 3:, ...], self.gt_t[:, 3:, ...]))
+ 
+            if l_percep is not None:
+                l_total += l_percep
+                loss_dict['l_percep_kd'] = l_percep
+            
 
-        l_total = l_total + 0. * sum(p.sum() for p in self.net_g.parameters())
+        # l_total = l_total + 0. * sum(p.sum() for p in self.net_g.parameters())
 
         l_total.backward()
         use_grad_clip = self.opt['train'].get('use_grad_clip', True)
@@ -244,10 +302,10 @@ class ImageRestorationModel(BaseModel):
                 j = i + m
                 if j >= n:
                     j = n
-                pred = self.net_g(self.lq[i:j])[0]
+                pred, features = self.net_g(self.lq[i:j])
                 if isinstance(pred, list):
                     pred = pred[-1]
-                outs.append(pred.detach().cpu())
+                outs.append(pred.cpu())
                 i = j
 
             self.output = torch.cat(outs, dim=0)
@@ -327,12 +385,13 @@ class ImageRestorationModel(BaseModel):
 
             if with_metrics:
                 # calculate metrics
+                shape = sr_img.shape
                 opt_metric = deepcopy(self.opt['val']['metrics'])
                 if use_image:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
                         self.metric_results[name] += getattr(
-                            metric_module, metric_type)(sr_img, gt_img, **opt_)
+                            metric_module, metric_type)(sr_img, gt_img[:shape[0], :shape[1], :], **opt_)
                 else:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
